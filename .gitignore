@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.log
+*.xlsx
+*.pdf
+job_listings_*.xlsx
+job_listings_*.pdf
+.jsearch_requests.json
+.platform_failures.json
+
+# Deployment packages
+*.zip
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/

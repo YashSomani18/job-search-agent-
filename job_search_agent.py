@@ -908,9 +908,9 @@ class JobSearchAgent:
             params = {
                 "query": query,
                 "page": "1",
-                "num_pages": "1",
+                "num_pages": "3",
                 "country": country,
-                "date_posted": "all"  # Get all jobs (can be: all, today, week, month)
+                "date_posted": "month"  # Only last 30 days — fresher, more relevant listings
             }
             
             headers = {
@@ -944,7 +944,7 @@ class JobSearchAgent:
                     job_listings = data['data']
                     logger.info(f"JSearch API returned {len(job_listings)} jobs")
                     
-                    for job_data in job_listings[:50]:  # Limit to first 50
+                    for job_data in job_listings[:100]:  # Limit to first 100 (3 pages × ~30)
                         try:
                             # Parse job title
                             job_title = job_data.get('job_title', '').strip()
@@ -1117,7 +1117,106 @@ class JobSearchAgent:
             logger.error(f"Unexpected error in Adzuna API search: {e}")
         
         return jobs
-    
+
+    def search_with_apify(self, keywords: str, location: str = "India") -> List[Dict[str, str]]:
+        """
+        Search for jobs using Apify actors (LinkedIn, Indeed, etc.).
+
+        Args:
+            keywords: Job search keywords
+            location: Job location (default: India)
+
+        Returns:
+            List of job dictionaries
+        """
+        if not self.config.APIFY_ENABLED or not self.config.APIFY_API_TOKEN:
+            return []
+
+        jobs = []
+
+        # Actor configurations in priority order
+        actors = [
+            {
+                "id": "bebity/linkedin-jobs-scraper",
+                "source": "Apify/LinkedIn",
+                "input": {"keywords": keywords, "location": location, "maxResults": 50}
+            },
+            {
+                "id": "misceres/indeed-scraper",
+                "source": "Apify/Indeed",
+                "input": {"keywords": keywords, "location": location, "maxResults": 50}
+            },
+        ]
+
+        headers = {
+            "Authorization": f"Bearer {self.config.APIFY_API_TOKEN}",
+            "Content-Type": "application/json"
+        }
+
+        for actor in actors:
+            try:
+                url = f"https://api.apify.com/v2/acts/{actor['id']}/run-sync-get-dataset-items"
+                logger.info(f"Calling Apify actor {actor['id']} for: {keywords} in {location}")
+
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    json=actor["input"],
+                    timeout=self.config.REQUEST_TIMEOUT
+                )
+
+                if response.status_code == 401:
+                    logger.error("Apify: Invalid API token. Please check your APIFY_API_TOKEN")
+                    break
+                if response.status_code == 429:
+                    logger.warning("Apify: Rate limit exceeded")
+                    break
+
+                response.raise_for_status()
+                items = response.json()
+
+                if not isinstance(items, list):
+                    logger.warning(f"Apify actor {actor['id']} returned unexpected format")
+                    continue
+
+                logger.info(f"Apify actor {actor['id']} returned {len(items)} items")
+
+                for item in items:
+                    try:
+                        title = (item.get('title') or item.get('jobTitle') or item.get('position') or '').strip()
+                        if not title:
+                            continue
+                        company = (item.get('company') or item.get('companyName') or item.get('employer') or 'Unknown').strip()
+                        location_str = (item.get('location') or item.get('jobLocation') or location).strip()
+                        url_str = (item.get('url') or item.get('jobUrl') or item.get('applyUrl') or '').strip()
+                        date_posted = (item.get('postedAt') or item.get('date') or item.get('datePosted') or '').strip()
+
+                        job = {
+                            'title': title,
+                            'company': company,
+                            'location': location_str,
+                            'url': url_str,
+                            'source': actor['source'],
+                            'date_posted': date_posted,
+                            'description': (item.get('description') or '')[:500],
+                            'employment_type': (item.get('employmentType') or '').strip(),
+                            'scraped_date': datetime.now().strftime('%Y-%m-%d')
+                        }
+                        jobs.append(job)
+                    except Exception as e:
+                        logger.debug(f"Error parsing Apify job item: {e}")
+                        continue
+
+            except requests.exceptions.HTTPError as e:
+                logger.error(f"HTTP error calling Apify actor {actor['id']}: {e}")
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error calling Apify actor {actor['id']}: {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error in Apify search ({actor['id']}): {e}")
+
+        logger.info(f"Apify total: {len(jobs)} jobs collected")
+        return jobs
+
     def search_hirist(self, keywords: str, location: str = "India") -> List[Dict[str, str]]:
         """
         Search for jobs on Hirist.com using web scraping.
@@ -1560,7 +1659,7 @@ class JobSearchAgent:
         
         # Keywords that indicate non-India locations (exclude these)
         non_india_keywords = [
-            'usa', 'united states', 'us ', 'uk ', 'united kingdom', 'london', 'canada', 'toronto',
+            'usa', 'united states', ' us ', ' uk ', 'united kingdom', 'london', 'canada', 'toronto',
             'vancouver', 'australia', 'sydney', 'melbourne', 'singapore', 'dubai', 'uae',
             'germany', 'france', 'spain', 'italy', 'netherlands', 'sweden', 'norway',
             'new york', 'san francisco', 'los angeles', 'chicago', 'seattle', 'boston',
@@ -1578,7 +1677,7 @@ class JobSearchAgent:
                     continue
             
             # Accept if Remote
-            if 'remote' in location_lower or 'work from home' in location_lower or 'wfh' in location_lower:
+            if 'remote' in location_lower or 'hybrid' in location_lower or 'work from home' in location_lower or 'wfh' in location_lower or 'worldwide' in location_lower or 'global' in location_lower:
                 filtered.append(job)
                 continue
             
@@ -1623,7 +1722,7 @@ class JobSearchAgent:
             
             # Prepare job list for AI
             job_list = "\n".join([
-                f"- {job['title']} at {job['company']} ({job['location']})"
+                f"- {job['title']} at {job['company']} ({job['location']}) [{job.get('employment_type', '') or job.get('date_posted', '')}]"
                 for job in jobs[:200]  # Limit for API
             ])
             
@@ -1662,6 +1761,9 @@ Consider:
 4. Skills mentioned in job title matching user's skills
 5. User preferences and requirements (Pan India only, Remote OK, WFO must be in India)
 6. Location filtering: Only India-based or Remote jobs
+7. Experience level: Exclude roles requiring 3+ years if user has ≤2 years experience
+8. Recency preference: Prefer recently posted jobs when date info is available
+9. Employment type: Prefer full-time roles; flag contract/freelance clearly
 
 Job Listings:
 {job_list}
@@ -1695,7 +1797,7 @@ If a job is not relevant OR location is outside India (and not Remote), exclude 
                             break
             
             # If AI filtering didn't match well, take top jobs by default
-            if len(filtered_jobs) < min(10, len(jobs)):
+            if len(filtered_jobs) < min(25, len(jobs)):
                 logger.warning("AI filtering didn't match well, using top jobs")
                 filtered_jobs = jobs[:self.config.MAX_JOBS]
             
@@ -1908,6 +2010,7 @@ If a job is not relevant OR location is outside India (and not Remote), exclude 
                     <div class="company">🏢 <strong>Company:</strong> {job['company']}</div>
                     <div class="location">📍 <strong>Location:</strong> {job['location']}</div>
                     <div class="location">📌 <strong>Source:</strong> {job['source']}</div>
+                    <div class="location">📅 <strong>Posted:</strong> {job.get('date_posted', 'N/A')}</div>
                     <div class="link" style="margin-top: 15px;">
                         <a href="{job['url']}" target="_blank" style="background-color: #0073b1; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Apply Now →</a>
                     </div>
@@ -2024,6 +2127,8 @@ If a job is not relevant OR location is outside India (and not Remote), exclude 
                 
                 if self.config.ADZUNA_ENABLED:
                     search_functions.append(('Adzuna', self.search_adzuna_api))
+                if self.config.APIFY_ENABLED:
+                    search_functions.append(('Apify', self.search_with_apify))
                 if self.config.INDEED_ENABLED:
                     search_functions.append(('Indeed', self.search_indeed))
                 if self.config.LINKEDIN_ENABLED:

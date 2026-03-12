@@ -63,6 +63,10 @@ class Config:
     ADZUNA_ENABLED: bool = os.getenv("ADZUNA_ENABLED", "false").lower() == "true"  # Requires API key
     ADZUNA_API_KEY: str = os.getenv("ADZUNA_API_KEY", "")
     ADZUNA_APP_ID: str = os.getenv("ADZUNA_APP_ID", "")
+
+    # Apify Web Scraping (expands job coverage across websites)
+    APIFY_API_TOKEN: str = os.getenv("APIFY_API_TOKEN", "")
+    APIFY_ENABLED: bool = os.getenv("APIFY_ENABLED", "false").lower() == "true"
     
     # AI Filtering Configuration
     AI_FILTER_PROMPT: str = os.getenv(

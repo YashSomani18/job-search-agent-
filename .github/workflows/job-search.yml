@@ -32,19 +32,26 @@ jobs:
           echo "GMAIL_USER=${{ secrets.GMAIL_USER }}" >> .env
           echo "GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}" >> .env
           echo "EMAIL_TO=${{ secrets.EMAIL_TO }}" >> .env
-          echo "JOB_KEYWORDS=${{ secrets.JOB_KEYWORDS }}" >> .env
+          JOB_KEYWORDS="${{ secrets.JOB_KEYWORDS }}"
+          echo "JOB_KEYWORDS=${JOB_KEYWORDS:-Java Developer,Spring Boot Developer,Backend Engineer,Software Engineer,SDE-1,Microservices Engineer}" >> .env
           JOB_LOCATION="${{ secrets.JOB_LOCATION }}"
           echo "JOB_LOCATION=${JOB_LOCATION:-India}" >> .env
           MAX_JOBS="${{ secrets.MAX_JOBS }}"
           echo "MAX_JOBS=${MAX_JOBS:-100}" >> .env
           
-          # User Profile Configuration (Recommended for better matching)
-          echo "USER_SKILLS=${{ secrets.USER_SKILLS }}" >> .env
-          echo "USER_EXPERIENCE_LEVEL=${{ secrets.USER_EXPERIENCE_LEVEL }}" >> .env
-          echo "USER_YEARS_EXPERIENCE=${{ secrets.USER_YEARS_EXPERIENCE }}" >> .env
-          echo "USER_CURRENT_ROLE=${{ secrets.USER_CURRENT_ROLE }}" >> .env
-          echo "USER_INDUSTRY=${{ secrets.USER_INDUSTRY }}" >> .env
-          echo "USER_PREFERENCES=${{ secrets.USER_PREFERENCES }}" >> .env
+          # User Profile Configuration (Resume-aligned defaults for stronger matching)
+          USER_SKILLS="${{ secrets.USER_SKILLS }}"
+          echo "USER_SKILLS=${USER_SKILLS:-Java,Spring Boot,Kafka,Redis,MySQL,PostgreSQL,MongoDB,Microservices,REST APIs,Docker,AWS,Jenkins}" >> .env
+          USER_EXPERIENCE_LEVEL="${{ secrets.USER_EXPERIENCE_LEVEL }}"
+          echo "USER_EXPERIENCE_LEVEL=${USER_EXPERIENCE_LEVEL:-Entry-to-Mid}" >> .env
+          USER_YEARS_EXPERIENCE="${{ secrets.USER_YEARS_EXPERIENCE }}"
+          echo "USER_YEARS_EXPERIENCE=${USER_YEARS_EXPERIENCE:-1.5}" >> .env
+          USER_CURRENT_ROLE="${{ secrets.USER_CURRENT_ROLE }}"
+          echo "USER_CURRENT_ROLE=${USER_CURRENT_ROLE:-Software Engineer}" >> .env
+          USER_INDUSTRY="${{ secrets.USER_INDUSTRY }}"
+          echo "USER_INDUSTRY=${USER_INDUSTRY:-Software Engineering / Backend Development}" >> .env
+          USER_PREFERENCES="${{ secrets.USER_PREFERENCES }}"
+          echo "USER_PREFERENCES=${USER_PREFERENCES:-Prioritize India/Remote backend roles, SDE-1/SDE roles, Java+Spring Boot+Kafka stack, full-time preferred}" >> .env
           
           LINKEDIN_ENABLED="${{ secrets.LINKEDIN_ENABLED }}"
           echo "LINKEDIN_ENABLED=${LINKEDIN_ENABLED:-true}" >> .env

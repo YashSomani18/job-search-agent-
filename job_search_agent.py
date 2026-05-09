@@ -6,6 +6,7 @@ import logging
 import time
 import smtplib
 import os
+import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -219,33 +220,39 @@ class JobSearchAgent:
         """
         profile = self._get_resume_profile()
         title = (job.get("title") or "").lower()
+        company = (job.get("company") or "").lower()
+        description = (job.get("description") or "").lower()
         employment_type = (job.get("employment_type") or "").lower()
         location = (job.get("location") or "").lower()
-        text_blob = " ".join(
-            [
-                title,
-                (job.get("company") or "").lower(),
-                location,
-                (job.get("source") or "").lower(),
-                (job.get("date_posted") or "").lower(),
-                (job.get("url") or "").lower(),
-            ]
-        )
+
+        # Precision-first matching: score only semantically meaningful text fields.
+        # Exclude URL/source/date to avoid false boosts from query params/noise.
+        role_blob = " ".join([title, description])
+        skill_blob = " ".join([title, description, company])
 
         score = 0
         criteria: List[str] = []
 
-        matched_roles = [role for role in profile["target_roles"] if role in text_blob]
+        matched_roles = [
+            role for role in profile["target_roles"]
+            if re.search(rf"\b{re.escape(role)}\b", role_blob)
+        ]
         if matched_roles:
             score += min(30, 10 * len(matched_roles))
             criteria.append(f"Role match: {', '.join(matched_roles[:3])}")
 
-        matched_primary = [skill for skill in profile["primary_skills"] if skill in text_blob]
+        matched_primary = [
+            skill for skill in profile["primary_skills"]
+            if re.search(rf"\b{re.escape(skill)}\b", skill_blob)
+        ]
         if matched_primary:
             score += min(45, 9 * len(matched_primary))
             criteria.append(f"Core skills: {', '.join(matched_primary[:5])}")
 
-        matched_secondary = [skill for skill in profile["secondary_skills"] if skill in text_blob]
+        matched_secondary = [
+            skill for skill in profile["secondary_skills"]
+            if re.search(rf"\b{re.escape(skill)}\b", skill_blob)
+        ]
         if matched_secondary:
             score += min(15, 3 * len(matched_secondary))
             criteria.append(f"Supporting stack: {', '.join(matched_secondary[:4])}")
@@ -265,6 +272,20 @@ class JobSearchAgent:
         if "full" in employment_type and "time" in employment_type:
             score += 5
             criteria.append("Employment type: full-time")
+
+        # Confidence gate for precision-first ranking.
+        # Strong signals: explicit role match OR multiple core skills OR junior-friendly title.
+        strong_signal_count = 0
+        if matched_roles:
+            strong_signal_count += 1
+        if len(matched_primary) >= 2:
+            strong_signal_count += 1
+        if any(keyword in title for keyword in profile["junior_friendly_keywords"]):
+            strong_signal_count += 1
+
+        if strong_signal_count == 0:
+            score = min(score, 55)
+            criteria.append("Low confidence: missing strong role/skill signals")
 
         final_score = max(0, min(100, score))
         if not criteria:

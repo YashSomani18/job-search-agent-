@@ -6,11 +6,12 @@ import logging
 import time
 import smtplib
 import os
+import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
@@ -174,6 +175,139 @@ class JobSearchAgent:
         except Exception:
             pass
         return summary
+
+    def _get_resume_profile(self) -> Dict[str, object]:
+        """Return a resume-aligned default profile used for deterministic scoring."""
+        return {
+            "target_roles": [
+                "software engineer",
+                "backend engineer",
+                "backend developer",
+                "java developer",
+                "sde",
+                "sde-1",
+            ],
+            "primary_skills": [
+                "java",
+                "spring boot",
+                "spring",
+                "kafka",
+                "redis",
+                "mysql",
+                "postgresql",
+                "postgres",
+                "mongodb",
+                "microservices",
+                "rest api",
+            ],
+            "secondary_skills": [
+                "docker",
+                "aws",
+                "jenkins",
+                "kubernetes",
+                "junit",
+                "mockito",
+                "sonarqube",
+            ],
+            "experience_ceiling_keywords": ["senior", "lead", "staff", "principal", "architect", "manager"],
+            "junior_friendly_keywords": ["sde-1", "sde i", "junior", "associate", "entry", "fresher"],
+        }
+
+    def _score_job_for_resume(self, job: Dict[str, str]) -> Tuple[int, List[str]]:
+        """
+        Score a job against the resume profile.
+        Returns score (0-100) and human-readable matching criteria.
+        """
+        profile = self._get_resume_profile()
+        title = (job.get("title") or "").lower()
+        company = (job.get("company") or "").lower()
+        description = (job.get("description") or "").lower()
+        employment_type = (job.get("employment_type") or "").lower()
+        location = (job.get("location") or "").lower()
+
+        # Precision-first matching: score only semantically meaningful text fields.
+        # Exclude URL/source/date to avoid false boosts from query params/noise.
+        role_blob = " ".join([title, description])
+        skill_blob = " ".join([title, description, company])
+
+        score = 0
+        criteria: List[str] = []
+
+        matched_roles = [
+            role for role in profile["target_roles"]
+            if re.search(rf"\b{re.escape(role)}\b", role_blob)
+        ]
+        if matched_roles:
+            score += min(30, 10 * len(matched_roles))
+            criteria.append(f"Role match: {', '.join(matched_roles[:3])}")
+
+        matched_primary = [
+            skill for skill in profile["primary_skills"]
+            if re.search(rf"\b{re.escape(skill)}\b", skill_blob)
+        ]
+        if matched_primary:
+            score += min(45, 9 * len(matched_primary))
+            criteria.append(f"Core skills: {', '.join(matched_primary[:5])}")
+
+        matched_secondary = [
+            skill for skill in profile["secondary_skills"]
+            if re.search(rf"\b{re.escape(skill)}\b", skill_blob)
+        ]
+        if matched_secondary:
+            score += min(15, 3 * len(matched_secondary))
+            criteria.append(f"Supporting stack: {', '.join(matched_secondary[:4])}")
+
+        if any(keyword in title for keyword in profile["junior_friendly_keywords"]):
+            score += 10
+            criteria.append("Experience fit: junior/SDE-1 friendly")
+
+        if any(keyword in title for keyword in profile["experience_ceiling_keywords"]):
+            score -= 25
+            criteria.append("Potentially senior-heavy requirement")
+
+        if "remote" in location or "india" in location:
+            score += 5
+            criteria.append("Location fit: India/Remote")
+
+        if "full" in employment_type and "time" in employment_type:
+            score += 5
+            criteria.append("Employment type: full-time")
+
+        # Confidence gate for precision-first ranking.
+        # Strong signals: explicit role match OR multiple core skills OR junior-friendly title.
+        strong_signal_count = 0
+        if matched_roles:
+            strong_signal_count += 1
+        if len(matched_primary) >= 2:
+            strong_signal_count += 1
+        if any(keyword in title for keyword in profile["junior_friendly_keywords"]):
+            strong_signal_count += 1
+
+        if strong_signal_count == 0:
+            score = min(score, 55)
+            criteria.append("Low confidence: missing strong role/skill signals")
+
+        final_score = max(0, min(100, score))
+        if not criteria:
+            criteria.append("Limited direct match signals found")
+        return final_score, criteria
+
+    def rank_jobs_by_resume_fit(self, jobs: List[Dict[str, str]], min_score: int = 60) -> List[Dict[str, str]]:
+        """Attach resume-match metadata, filter by score threshold, sort descending."""
+        ranked_jobs = []
+        for job in jobs:
+            score, criteria = self._score_job_for_resume(job)
+            if score < min_score:
+                continue
+
+            enriched_job = dict(job)
+            enriched_job["match_score"] = score
+            enriched_job["matching_criteria"] = "; ".join(criteria)
+            ranked_jobs.append(enriched_job)
+
+        ranked_jobs.sort(key=lambda x: x.get("match_score", 0), reverse=True)
+        logger.info(f"Resume ranking applied: {len(jobs)} -> {len(ranked_jobs)} jobs (min score: {min_score})")
+        return ranked_jobs
     
     def search_indeed(self, keywords: str, location: str = "Remote") -> List[Dict[str, str]]:
         """
@@ -1826,7 +1960,10 @@ If a job is not relevant OR location is outside India (and not Remote), exclude 
             ws.title = "Job Listings"
             
             # Header row
-            headers = ['Job ID', 'Job Title', 'Company Name', 'Location', 'Source', 'Date Posted', 'Scraped Date', 'Job URL']
+            headers = [
+                'Job ID', 'Match Score', 'Matching Criteria', 'Job Title', 'Company Name',
+                'Location', 'Source', 'Date Posted', 'Scraped Date', 'Job URL'
+            ]
             ws.append(headers)
             
             # Style header row
@@ -1842,6 +1979,8 @@ If a job is not relevant OR location is outside India (and not Remote), exclude 
                 job_id = job.get('id', f"JOB-{i:03d}")
                 row = [
                     job_id,
+                    job.get('match_score', 0),
+                    job.get('matching_criteria', ''),
                     job.get('title', ''),
                     job.get('company', ''),
                     job.get('location', ''),
@@ -1853,7 +1992,7 @@ If a job is not relevant OR location is outside India (and not Remote), exclude 
                 ws.append(row)
                 
                 # Make URL column hyperlink
-                url_cell = ws.cell(row=i+1, column=8)
+                url_cell = ws.cell(row=i+1, column=10)
                 if job.get('url'):
                     url_cell.hyperlink = job['url']
                     url_cell.style = "Hyperlink"
@@ -1913,12 +2052,14 @@ If a job is not relevant OR location is outside India (and not Remote), exclude 
             story.append(Spacer(1, 12))
             
             # Table data
-            data = [['Job ID', 'Job Title', 'Company', 'Location', 'Source', 'Date Posted', 'URL']]
+            data = [['Job ID', 'Score', 'Criteria', 'Job Title', 'Company', 'Location', 'Source', 'Date Posted', 'URL']]
             
             for i, job in enumerate(jobs, 1):
                 job_id = job.get('id', f"JOB-{i:03d}")
                 row = [
                     job_id,
+                    str(job.get('match_score', 0)),
+                    job.get('matching_criteria', '')[:45] + '...' if len(job.get('matching_criteria', '')) > 45 else job.get('matching_criteria', ''),
                     job.get('title', '')[:40] + '...' if len(job.get('title', '')) > 40 else job.get('title', ''),
                     job.get('company', '')[:30] + '...' if len(job.get('company', '')) > 30 else job.get('company', ''),
                     job.get('location', '')[:20] + '...' if len(job.get('location', '')) > 20 else job.get('location', ''),
@@ -1997,7 +2138,9 @@ If a job is not relevant OR location is outside India (and not Remote), exclude 
                 <div class="stats">
                     <strong>Search Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br>
                     <strong>Keywords:</strong> {', '.join(self.config.JOB_KEYWORDS)}<br>
-                    <strong>Location:</strong> {self.config.JOB_LOCATION}
+                    <strong>Location:</strong> {self.config.JOB_LOCATION}<br>
+                    <strong>Ranking:</strong> Sorted by resume match score (high to low)<br>
+                    <strong>Visibility Rule:</strong> Only jobs with match score ≥ 60 are included
                 </div>
             """
             
@@ -2007,6 +2150,8 @@ If a job is not relevant OR location is outside India (and not Remote), exclude 
                 <div class="job">
                     <div style="font-weight: bold; color: #666; font-size: 12px; margin-bottom: 5px;">Job ID: {job_id}</div>
                     <div class="title">{i}. {job['title']}</div>
+                    <div class="location">🎯 <strong>Match Score:</strong> {job.get('match_score', 0)}/100</div>
+                    <div class="location">✅ <strong>Matching Criteria:</strong> {job.get('matching_criteria', 'N/A')}</div>
                     <div class="company">🏢 <strong>Company:</strong> {job['company']}</div>
                     <div class="location">📍 <strong>Location:</strong> {job['location']}</div>
                     <div class="location">📌 <strong>Source:</strong> {job['source']}</div>
@@ -2228,6 +2373,9 @@ If a job is not relevant OR location is outside India (and not Remote), exclude 
             # Filter with AI
             keywords_str = ', '.join(self.config.JOB_KEYWORDS)
             filtered_jobs = self.filter_jobs_with_ai(india_jobs, keywords_str)
+            
+            # Resume-based scoring and ranking (descending), hide jobs below 60
+            filtered_jobs = self.rank_jobs_by_resume_fit(filtered_jobs, min_score=60)
             
             # Send email
             if filtered_jobs:
